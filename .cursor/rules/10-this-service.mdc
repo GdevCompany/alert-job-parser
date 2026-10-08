@@ -1,0 +1,8 @@
+---
+description: Repositoriy alert-job-parser
+alwaysApply: true
+---
+
+# alert-job-parser
+
+Maven artifact `parser-alert-job`. Exchange parsers and schedulers. New site: parsers under `service/order/`, `SiteName`.

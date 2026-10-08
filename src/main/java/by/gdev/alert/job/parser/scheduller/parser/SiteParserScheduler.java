@@ -1,0 +1,75 @@
+package by.gdev.alert.job.parser.scheduller.parser;
+
+import by.gdev.alert.job.parser.scheduller.parser.properties.ParserScheduleProperties;
+import by.gdev.alert.job.parser.service.order.SiteParser;
+import by.gdev.common.model.OrderDTO;
+import com.microsoft.playwright.PlaywrightException;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.TaskScheduler;
+
+import java.util.Date;
+import java.util.List;
+
+@Slf4j
+public class SiteParserScheduler {
+
+    private final SiteParser parser;
+    private final OrderDispatcher dispatcher;
+
+
+    public SiteParserScheduler(SiteParser parser,
+                               OrderDispatcher dispatcher,
+                               ParserScheduleProperties props,
+                               TaskScheduler taskScheduler) {
+        this.parser = parser;
+        this.dispatcher = dispatcher;
+
+        // регистрируем задачу прямо в конструкторе
+        if (parser.isActive()){
+            taskScheduler.scheduleWithFixedDelay(
+                    this::runParser,
+                    new Date(System.currentTimeMillis() + props.getInitialDelayMillis()),
+                    props.getFixedDelayMillis());
+
+            log.debug("Шедулер для {} запущен: initialDelay={}s, fixedDelay={}s",
+                    parser.getSiteName(), props.getInitialDelaySeconds(), props.getFixedDelaySeconds());
+        }
+        else log.debug("Парсер для {} ВЫКЛЮЧЕН..", parser.getSiteName());
+
+    }
+
+    private void runParser() {
+        log.debug("Запуск парсера {} в потоке {}", parser.getSiteName(), Thread.currentThread().getName());
+        try {
+            long startTime = System.currentTimeMillis();
+            List<OrderDTO> orders = parser.parse();
+            long duration = System.currentTimeMillis() - startTime;
+            String formattedDuration = formatDuration(duration);
+            dispatcher.dispatch(orders, parser.getSiteName());
+            log.debug("Парсер {} завершил работу за {}, найдено {} заказов",
+                    parser.getSiteName(), formattedDuration, orders.size());
+        }
+        catch (PlaywrightException e) {
+            if (e.getMessage() != null && (e.getMessage().contains("Timeout") || e.getMessage().contains("TimeoutError"))) {
+                    log.debug("Timeout playwright для парсера {}", parser.getSiteName());
+                    return;
+                }
+            log.error("Playwright ошибка парсера {} : {}", parser.getSiteName(),  e.getMessage());
+        }
+        catch (Exception e) {
+            log.error("Ошибка парсера {}: {}", parser.getSiteName(), e.getMessage(), e);
+        }
+    }
+
+    private String formatDuration(long millis) {
+        if (millis < 1000) {
+            return millis + " мс";
+        } else if (millis < 60000) {
+            return String.format("%.2f сек", millis / 1000.0);
+        } else {
+            long minutes = millis / 60000;
+            long seconds = (millis % 60000) / 1000;
+            return String.format("%d мин %d сек", minutes, seconds);
+        }
+    }
+}
