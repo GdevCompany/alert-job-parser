@@ -50,15 +50,43 @@ public class SiteParserScheduler {
                     parser.getSiteName(), formattedDuration, orders.size());
         }
         catch (PlaywrightException e) {
-            if (e.getMessage() != null && (e.getMessage().contains("Timeout") || e.getMessage().contains("TimeoutError"))) {
-                    log.debug("Timeout playwright для парсера {}", parser.getSiteName());
-                    return;
-                }
-            log.error("Playwright ошибка парсера {} : {}", parser.getSiteName(),  e.getMessage());
+            if (isExpectedPlaywrightFailure(e.getMessage())) {
+                log.debug("Playwright (сеть/прокси/таймаут) для парсера {}: {}",
+                        parser.getSiteName(), e.getMessage());
+                return;
+            }
+            log.error("Playwright ошибка парсера {} : {}", parser.getSiteName(), e.getMessage());
         }
         catch (Exception e) {
+            PlaywrightException playwright = unwrapPlaywrightException(e);
+            if (playwright != null && isExpectedPlaywrightFailure(playwright.getMessage())) {
+                log.debug("Playwright (сеть/прокси/таймаут) для парсера {}: {}",
+                        parser.getSiteName(), playwright.getMessage());
+                return;
+            }
             log.error("Ошибка парсера {}: {}", parser.getSiteName(), e.getMessage(), e);
         }
+    }
+
+    private static boolean isExpectedPlaywrightFailure(String message) {
+        if (message == null || message.isBlank()) {
+            return false;
+        }
+        return message.contains("Timeout")
+                || message.contains("TimeoutError")
+                || message.contains("ERR_TUNNEL_CONNECTION_FAILED")
+                || message.contains("ERR_PROXY_CONNECTION_FAILED");
+    }
+
+    private static PlaywrightException unwrapPlaywrightException(Throwable e) {
+        Throwable current = e;
+        while (current != null) {
+            if (current instanceof PlaywrightException pe) {
+                return pe;
+            }
+            current = current.getCause();
+        }
+        return null;
     }
 
     private String formatDuration(long millis) {

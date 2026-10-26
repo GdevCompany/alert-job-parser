@@ -24,7 +24,7 @@ public class KworkRuOrderParser extends PlaywrightSiteParser {
     @Value("${kwork.proxy.active}")
     private boolean kworkruProxyActive;
 
-    private final String KWORK_PROJECTS_LINK = "https://kwork.ru/projects";
+    private static final String KWORK_PROJECTS_LINK = "https://kwork.ru/projects";
 
     @Value("${parser.work.kwork.ru}")
     private void setActive(boolean active) {
@@ -61,28 +61,110 @@ public class KworkRuOrderParser extends PlaywrightSiteParser {
 
         PlaywrightSession session = null;
         try {
-            session = createSession(headless, kworkruProxyActive);
-            Page page = session.getPage();
-            page.navigate(KWORK_PROJECTS_LINK, new Page.NavigateOptions().setWaitUntil(WaitUntilState.NETWORKIDLE));
-            for(Pair<Category, Subcategory> pair: categoriesPairList){
-                List<OrderDTO> categoryOrders = mapItemsWithRetry(link, kworkruProxyActive, siteSourceJobId , pair, page);
-                orders.addAll(categoryOrders);
-                page.navigate(KWORK_PROJECTS_LINK, new Page.NavigateOptions().setWaitUntil(WaitUntilState.NETWORKIDLE));
+            session = openProjectsSession();
+            if (session == null) {
+                log.warn("KWORK: не удалось открыть {} после {} попыток (прокси/сеть)",
+                        KWORK_PROJECTS_LINK, getRetryAttempts());
+                return orders;
             }
-        }
-        finally {
-            closeResources(session.getPage(), session.getContext(), session.getBrowser(), session.getPlaywright());
+            Page page = session.getPage();
+            for (Pair<Category, Subcategory> pair : categoriesPairList) {
+                List<OrderDTO> categoryOrders =
+                        mapItemsWithRetry(link, kworkruProxyActive, siteSourceJobId, pair, page);
+                orders.addAll(categoryOrders);
+                try {
+                    navigateToProjects(page);
+                } catch (PlaywrightException e) {
+                    log.warn("KWORK: не удалось вернуться на /projects: {}", shortPlaywrightMessage(e));
+                    break;
+                }
+            }
+        } finally {
+            if (session != null) {
+                closeResources(session.getPage(), session.getContext(), session.getBrowser(), session.getPlaywright());
+            }
         }
         return orders;
     }
 
+    /**
+     * Новая сессия (и прокси при включённом {@code kworkruProxyActive}) + загрузка /projects.
+     */
+    private PlaywrightSession openProjectsSession() {
+        int attempts = getRetryAttempts();
+        for (int attempt = 1; attempt <= attempts; attempt++) {
+            PlaywrightSession session = null;
+            try {
+                session = createSession(headless, kworkruProxyActive);
+                navigateToProjects(session.getPage());
+                return session;
+            } catch (PlaywrightException e) {
+                log.warn("KWORK: /projects попытка {}/{}: {}", attempt, attempts,
+                        shortPlaywrightMessage(e));
+                if (session != null) {
+                    closeResources(session.getPage(), session.getContext(), session.getBrowser(), session.getPlaywright());
+                }
+                if (attempt < attempts) {
+                    sleepBeforeRetry(attempt);
+                }
+            }
+        }
+        return null;
+    }
+
+    private void sleepBeforeRetry(int attempt) {
+        try {
+            long delay = getRetryDelayMs() * (long) Math.pow(2, attempt - 1);
+            Thread.sleep(delay);
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void navigateToProjects(Page page) {
+        PlaywrightException last = null;
+        for (int loadAttempt = 1; loadAttempt <= 2; loadAttempt++) {
+            try {
+                page.navigate(KWORK_PROJECTS_LINK,
+                        new Page.NavigateOptions().setWaitUntil(WaitUntilState.DOMCONTENTLOADED));
+                page.waitForSelector(KworkProjectsSelectors.RUBRICS_TREE_READY,
+                        new Page.WaitForSelectorOptions().setTimeout(30000));
+                return;
+            } catch (PlaywrightException e) {
+                last = e;
+                if (loadAttempt < 2) {
+                    log.debug("KWORK: /projects не готов ({}), повторная загрузка: {}",
+                            loadAttempt, shortPlaywrightMessage(e));
+                    page.waitForTimeout(1500);
+                }
+            }
+        }
+        throw last;
+    }
+
+    private static String shortPlaywrightMessage(PlaywrightException e) {
+        String msg = e.getMessage();
+        if (msg == null || msg.isBlank()) {
+            return e.getClass().getSimpleName();
+        }
+        int net = msg.indexOf("net::");
+        if (net >= 0) {
+            int end = msg.indexOf('\n', net);
+            String line = end > net ? msg.substring(net, end) : msg.substring(net);
+            return line.length() > 160 ? line.substring(0, 160) : line;
+        }
+        if (msg.contains("Timeout")) {
+            return "Timeout";
+        }
+        return msg.length() > 160 ? msg.substring(0, 160) + "…" : msg;
+    }
+
     private List<OrderDTO> tasksParsing(Page page, Long siteSourceJobId, Category category, Subcategory subCategory) {
+        if (!waitForOrderCards(page, 30000)) {
+            return List.of();
+        }
 
-        // Ждём появления карточек
-        page.waitForSelector("div.want-card.want-card--list",
-                new Page.WaitForSelectorOptions().setTimeout(30000));
-
-        Locator elementsOrders = page.locator("div.want-card.want-card--list");
+        Locator elementsOrders = page.locator(KworkProjectsSelectors.ORDER_CARD_LIST);
 
         List<Order> parsedOrders = elementsOrders.all()
                 .stream()
@@ -151,7 +233,7 @@ public class KworkRuOrderParser extends PlaywrightSiteParser {
 
 
     public void clickCategory(Page page, Category category, Subcategory subCategory) {
-        page.waitForSelector("div.projects-filter__rubrics-list");
+        page.waitForSelector(KworkProjectsSelectors.RUBRICS_TREE_READY);
         // Категория
         String categoryName = category.getNativeLocName().trim();
 
@@ -181,7 +263,19 @@ public class KworkRuOrderParser extends PlaywrightSiteParser {
             }
         }
 
-        page.waitForLoadState(LoadState.NETWORKIDLE);
+        page.waitForLoadState(LoadState.DOMCONTENTLOADED);
+        waitForOrderCards(page, 20000);
+    }
+
+    /** Ждёт карточки заказов; в пустой рубрике — false без исключения. */
+    private static boolean waitForOrderCards(Page page, int timeoutMs) {
+        try {
+            page.waitForSelector(KworkProjectsSelectors.ORDER_CARD_LIST,
+                    new Page.WaitForSelectorOptions().setTimeout(timeoutMs));
+            return true;
+        } catch (PlaywrightException e) {
+            return page.locator(KworkProjectsSelectors.ORDER_CARD_LIST).count() > 0;
+        }
     }
 
 
@@ -226,7 +320,7 @@ public class KworkRuOrderParser extends PlaywrightSiteParser {
             }
 
             page = context.newPage();
-            page.navigate(url, new Page.NavigateOptions().setWaitUntil(WaitUntilState.NETWORKIDLE));
+            page.navigate(url, new Page.NavigateOptions().setWaitUntil(WaitUntilState.DOMCONTENTLOADED));
             page.waitForSelector("div.kwork-card-item", new Page.WaitForSelectorOptions().setTimeout(30000));
 
             Locator elementsOrders = page.locator("div.kwork-card-item");

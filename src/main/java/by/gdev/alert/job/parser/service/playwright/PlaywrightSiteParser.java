@@ -54,6 +54,7 @@ public abstract class PlaywrightSiteParser extends AbsctractSiteParser {
      * Количество попыток повторного выполнения операции Playwright.
      */
     @Value("${parser.site.retry.attempts:3}")
+    @Getter
     private int retryAttempts;
 
 
@@ -68,6 +69,7 @@ public abstract class PlaywrightSiteParser extends AbsctractSiteParser {
      * Базовая задержка между retry‑попытками Playwright (мс).
      */
     @Value("${parser.site.retry.delay:2000}")
+    @Getter
     private long retryDelayMs;
 
     /**
