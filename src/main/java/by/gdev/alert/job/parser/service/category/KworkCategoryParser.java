@@ -1,6 +1,7 @@
 package by.gdev.alert.job.parser.service.category;
 
 import by.gdev.alert.job.parser.domain.db.SiteSourceJob;
+import by.gdev.alert.job.parser.service.order.KworkProjectsSelectors;
 import by.gdev.alert.job.parser.service.playwright.PlaywrightCategoryParser;
 import by.gdev.common.model.SiteName;
 import by.gdev.common.model.proxy.ProxyCredentials;
@@ -55,8 +56,9 @@ public class KworkCategoryParser extends PlaywrightCategoryParser implements Cat
 
             page = context.newPage();
             page.navigate(KWORK_PROJECTS_LINK,
-                    new Page.NavigateOptions().setWaitUntil(WaitUntilState.NETWORKIDLE));
-            page.waitForSelector("div.projects-filter__rubrics-list");
+                    new Page.NavigateOptions().setWaitUntil(WaitUntilState.DOMCONTENTLOADED));
+            page.waitForSelector(KworkProjectsSelectors.RUBRICS_TREE_READY,
+                    new Page.WaitForSelectorOptions().setTimeout(30000));
 
             // Собираем список названий категорий
             List<String> topNames = page.locator("span.multilevel-list__label-title").allInnerTexts();
@@ -100,8 +102,9 @@ public class KworkCategoryParser extends PlaywrightCategoryParser implements Cat
 
                 // Сбрасываем страницу
                 page.navigate(KWORK_PROJECTS_LINK,
-                        new Page.NavigateOptions().setWaitUntil(WaitUntilState.NETWORKIDLE));
-                page.waitForSelector("div.projects-filter__rubrics-list");
+                        new Page.NavigateOptions().setWaitUntil(WaitUntilState.DOMCONTENTLOADED));
+                page.waitForSelector(KworkProjectsSelectors.RUBRICS_TREE_READY,
+                        new Page.WaitForSelectorOptions().setTimeout(30000));
             }
 
         } finally {
